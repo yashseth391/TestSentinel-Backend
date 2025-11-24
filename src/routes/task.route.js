@@ -7,8 +7,8 @@ import {
   uploadQuestions,
   getTestQuestions,
   serverRunning,
-  submitTest,
   getTeacherTests,
+  submitResult,
 } from "../controllers/task.controller.js";
 
 console.log("In task route");
@@ -28,13 +28,13 @@ router.get("/test/:testId", getTestQuestions);
 // 4️⃣ User type check (teacher/student)
 router.get("/userType", checkUser);
 
-// 5️⃣ Submit test results (student)
-router.post("/submit", submitTest);
-
 // 6️⃣ Get all tests for a teacher
 router.get("/teacher/:teacherId/tests", getTeacherTests);
 
 // 7️⃣ Server health check
 router.get("/", serverRunning);
+
+// 8️⃣ Submit result (student)
+router.post("/submitResult", submitResult);
 
 export default router;

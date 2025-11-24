@@ -1,3 +1,45 @@
+// AI agent: Gemini-powered backend logic
+// Functionality: For each testId, keep an array of prompts. If testType is 'test', use the current prompt. Else, send a Gemini prompt for 150 medium/high MCQs with 4 options in the required JSON format.
+
+// Store prompts per testId
+const testPrompts = {};
+
+const buildQuizPromptText = (pdfJson) => {
+  return `
+Using ONLY the text below, create 10 multiple-choice questions.
+
+OUTPUT RULES:
+- Output must be ONLY a valid JSON array.
+- No markdown, no backticks, no explanation outside JSON.
+- Do NOT add text before or after the JSON array.
+
+QUESTION FORMAT (every item must follow this):
+{
+  "title": "one line question",
+  "options": [
+    { "label": "A", "text": "" },
+    { "label": "B", "text": "" },
+    { "label": "C", "text": "" },
+    { "label": "D", "text": "" }
+  ],
+  "answer": "A",
+  "explanation": "short explanation"
+}
+
+STRICT RULES:
+- Generate exactly 10 questions.
+- 4 options only (A,B,C,D).
+- "answer" must match a label.
+- No empty fields.
+- No null values.
+
+TEXT_START
+${pdfJson.text}
+TEXT_END
+  `.trim();
+};
+
+const apiKey = "AIzaSyCKf6wGvdUxEYfPJL--Lcp8ybcdJe-Fvbg";
 import { supabase } from "../supabase.js";
 import { generateSimpleTestId } from "../utils/GenerateTestId.js";
 import convertPdfToJson from "../utils/pdfToJson.js";
@@ -84,7 +126,6 @@ const callGemini = async (prompt, apiKey) => {
   }
 
   const result = await response.json();
-  console.log("📩 Gemini full response JSON:", JSON.stringify(result));
 
   // ---- Handle the correct Gemini structure ----
   // primary
@@ -95,28 +136,31 @@ const callGemini = async (prompt, apiKey) => {
     result?.response?.text ??
     null;
 
+  // Remove ```json and ``` wrappers
   text = text
     .replace(/```json/gi, "")
     .replace(/```/g, "")
     .trim();
-
-  if (!text) {
-    throw new Error("Gemini returned no usable content. Check logs.");
+  try {
+    const parsed = JSON.parse(text);
+    return parsed; // Could be object or array
+  } catch (err) {
+    console.log("error is ", err);
   }
-
+  const fixed = "[" + text.replace(/\}\s*\{/g, "},{") + "]";
   // Gemini usually returns a JSON string → parse it
   try {
-    return JSON.parse(text);
+    return JSON.parse(fixed);
   } catch (err) {
-    console.log("⚠️ Gemini returned non-JSON text:", text);
-    return { text };
+    console.log("error is ", err);
+    return text;
   }
 };
 
 // POST /api/test
 export const createTest = async (req, res) => {
   try {
-    const { teacherId } = req.body;
+    const { teacherId, testType = "test" } = req.body;
 
     if (!teacherId) {
       return res.status(400).json({ error: "Missing teacherId or password" });
@@ -143,7 +187,7 @@ export const createTest = async (req, res) => {
     // 3️⃣ Store in tests table
     const { error: insertError } = await supabase
       .from("tests")
-      .insert([{ testId: testId, teacherId: teacherId }]);
+      .insert([{ testId: testId, teacherId: teacherId, testType: testType }]);
 
     if (insertError) {
       console.log("Insert tests error:", insertError);
@@ -203,27 +247,38 @@ export const uploadQuestions = async (req, res) => {
 
     // 3️⃣ Convert PDF → JSON
     const jsonData = await convertPdfToJson(pdf.buffer);
-    // console.log("Converted PDF to JSON:", jsonData);
 
-    const promptText = buildPromptText(promptIndex, jsonData);
-    // console.log("Built prompt for Gemini:", promptText);
+    // Store prompt for this testId
+    if (!testPrompts[testId]) testPrompts[testId] = [];
 
-    const transformedJson = await callGemini(
-      promptText,
-      "AIzaSyCWtI6VG1nERbcanTBgRVyIgYNB-K-6Ppg"
-    );
+    let promptText, transformedJson;
 
+    const testType = (testRow.testType || "test").toLowerCase();
+
+    if (testType === "quiz") {
+      promptText = buildQuizPromptText(jsonData);
+    } else {
+      promptText = buildPromptText(promptIndex, jsonData);
+    }
+    testPrompts[testId].push(promptText);
+    transformedJson = await callGemini(promptText, apiKey);
     // 4️⃣ Store Gemini-transformed JSON in tests_json table
     const { error: jsonError } = await supabase
       .from("tests_json")
-      .insert([{ testId: testId, jsondata: transformedJson }]);
+      .insert([
+        { testId: testId, jsondata: transformedJson, testType: testType },
+      ]);
 
     if (jsonError) {
       console.log("Insert tests_json error:", jsonError);
       return res.status(500).json({ error: "Failed to save questions JSON" });
     }
 
-    return res.json({ msg: "Questions uploaded and processed", testId });
+    return res.json({
+      msg: "Questions uploaded and processed",
+      testId,
+      testType,
+    });
   } catch (err) {
     console.log("UPLOAD QUESTIONS ERROR:", err);
     return res.status(500).json({ error: "Server error" });
@@ -237,22 +292,37 @@ export const uploadQuestions = async (req, res) => {
 export const getTestQuestions = async (req, res) => {
   try {
     const { testId } = req.params;
-    console.log("Fetching questions for testId:", testId);
-    const { data, error } = await supabase
+
+    // Get questions JSON
+    const { data: jsonRow, error: jsonError } = await supabase
       .from("tests_json")
       .select("jsondata")
       .eq("testId", testId)
       .maybeSingle();
 
-    if (error) {
-      console.log("Fetch tests_json error:", error);
+    if (jsonError) {
+      console.log("Fetch tests_json error:", jsonError);
     }
 
-    if (!data) {
+    if (!jsonRow) {
       return res.status(404).json({ error: "Test questions not found" });
     }
-    console.log("Retrieved JSON data:", data);
-    return res.json(data.jsondata);
+
+    // Get testType from tests table
+    const { data: testRow, error: testError } = await supabase
+      .from("tests")
+      .select("testType")
+      .eq("testId", testId)
+      .maybeSingle();
+
+    if (testError) {
+      console.log("Fetch testType error:", testError);
+    }
+
+    return res.json({
+      questions: jsonRow.jsondata,
+      testType: testRow?.testType || null,
+    });
   } catch (err) {
     console.log("GET TEST QUESTIONS ERROR:", err);
     return res.status(500).json({ error: "Server error" });
@@ -290,69 +360,42 @@ export const checkUser = async (req, res) => {
 
 /**
  * POST /api/submit
- * body: { studentId, testId, testCasesPassed }
- * Creates a table per testId (if not exists) and inserts submission
+ * body: { userId, testId, testType, passed, totalQuestions }
+ * Checks for submit_<testId> table, creates if missing, inserts submission
  */
-export const submitTest = async (req, res) => {
+export const submitResult = async (req, res) => {
   try {
-    const { studentId, testId, testCasesPassed } = req.body;
+    const { userId, testId, testType, passed, totalQuestions } = req.body;
 
-    if (!studentId || !testId || testCasesPassed == null) {
-      return res
-        .status(400)
-        .json({ error: "Missing studentId, testId, or testCasesPassed" });
+    if (
+      !userId ||
+      !testId ||
+      !testType ||
+      passed == null ||
+      totalQuestions == null
+    ) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
-
-    // Sanitize testId for table name (alphanumeric + underscore only)
-    const tableName = `submissions_${testId.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-
-    // 1️⃣ Check if table exists; if not, create it
-    const { data: tables, error: listError } = await supabase.rpc(
-      "check_table_exists",
-      { table_name: tableName }
-    );
-
-    // If RPC doesn't exist or fails, try creating the table directly
-    // Supabase doesn't expose table creation via REST API, so we use raw SQL via rpc
-    const createTableSQL = `
-      CREATE TABLE IF NOT EXISTS public."${tableName}" (
-        id SERIAL PRIMARY KEY,
-        "studentId" TEXT NOT NULL,
-        "testCasesPassed" INTEGER NOT NULL,
-        "submittedAt" TIMESTAMP DEFAULT NOW()
-      );
-    `;
-
-    // Execute raw SQL (requires a custom RPC function or use supabase-js with service role)
-    // For now, we assume the table exists or use supabase admin to pre-create
-    // Alternative: insert directly and handle error if table doesn't exist
-
-    // 2️⃣ Insert submission record
-    const { data, error: insertError } = await supabase.from(tableName).insert([
-      {
-        studentId,
-        testCasesPassed,
-      },
-    ]);
-
+    // Insert into single submissions table
+    const { error: insertError } = await supabase
+      .from("submissions")
+      .insert([{ userId, testId, testType, passed, totalQuestions }]);
     if (insertError) {
-      // If table doesn't exist, Supabase will return an error
-      // In production, you'd create the table via migration or admin SQL
-      console.log("Insert error:", insertError);
       return res.status(500).json({
-        error: "Failed to submit. Table may not exist.",
+        error: "Failed to submit result",
         details: insertError.message,
       });
     }
-
     return res.json({
       msg: "Submission recorded",
-      studentId,
+      userId,
       testId,
-      testCasesPassed,
+      testType,
+      passed,
+      totalQuestions,
     });
   } catch (err) {
-    console.log("SUBMIT TEST ERROR:", err);
+    console.log("SUBMIT RESULT ERROR:", err);
     return res.status(500).json({ error: "Server error" });
   }
 };

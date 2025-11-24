@@ -4,6 +4,7 @@ export function generateSimpleTestId() {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const year = now.getFullYear();
   const hour = now.getHours(); // 0–23
-  console.log("Generated testId:", `${day}-${month}-${year}-${hour}`);
-  return `${day}-${month}-${year}-${hour}`;
+  const min = now.getMinutes();
+
+  return `${day}-${month}-${year}-${hour}-${min}`;
 }
