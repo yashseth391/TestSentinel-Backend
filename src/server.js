@@ -11,7 +11,7 @@ app.use(express.json());
 
 app.use("/api", taskRoute);
 app.use(helmet()); // Security headers
-const PORT = 8082;
+const PORT = process.env.PORT || 8082;
 
 app.listen(PORT, () => {
   console.log(`🚀 Server is running at http://localhost:${PORT}`);
