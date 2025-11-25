@@ -9,6 +9,7 @@ import {
   serverRunning,
   getTeacherTests,
   submitResult,
+  viewResult,
 } from "../controllers/task.controller.js";
 
 console.log("In task route");
@@ -16,6 +17,8 @@ console.log("In task route");
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
+// 7️⃣ Server health check
+router.get("/", serverRunning);
 // 1️⃣ Create test (teacher)
 router.post("/createTest", createTest);
 
@@ -31,10 +34,10 @@ router.get("/userType", checkUser);
 // 6️⃣ Get all tests for a teacher
 router.get("/teacher/:teacherId/tests", getTeacherTests);
 
-// 7️⃣ Server health check
-router.get("/", serverRunning);
-
 // 8️⃣ Submit result (student)
 router.post("/submitResult", submitResult);
+
+// 9️⃣ View all results for a test
+router.get("/viewResult/:testId", viewResult);
 
 export default router;

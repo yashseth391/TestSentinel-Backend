@@ -8,7 +8,7 @@ const app = express();
 app.use(cors()); // Enable CORS
 
 app.use(express.json());
-
+console.log("started");
 app.use("/api", taskRoute);
 app.use(helmet()); // Security headers
 const PORT = process.env.PORT || 8082;
